@@ -20,8 +20,8 @@ class Credit(Base):
     percent = Column(Float, nullable=False)
 
     __table_args__ = (
-        Index("idx_credits_issuance_date", issuance_date),
-        Index("idx_credits_user_id", user_id),  
+        Index("idx_credits_issuance_date", "issuance_date"),
+        Index("idx_credits_user_id", "user_id"),
     )
 
 
@@ -30,9 +30,7 @@ class Dictionary(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String(50), nullable=False)
 
-    __table_args__ = (
-        Index("idx_dictionary_name", name),  
-    )
+    __table_args__ = (Index("idx_dictionary_name", "name"),)
 
 
 class Plan(Base):
@@ -43,8 +41,8 @@ class Plan(Base):
     category_id = Column(Integer, ForeignKey("Dictionary.id"), nullable=False)
 
     __table_args__ = (
-        Index("idx_plans_period", period),
-        Index("idx_plans_category_id", category_id),
+        Index("idx_plans_period", "period"),
+        Index("idx_plans_category_id", "category_id"),
     )
 
 
@@ -57,6 +55,6 @@ class Payment(Base):
     type_id = Column(Integer, ForeignKey("Dictionary.id"), nullable=False)
 
     __table_args__ = (
-        Index("idx_payments_payment_date", payment_date),
-        Index("idx_payments_credit_id", credit_id),  
+        Index("idx_payments_payment_date", "payment_date"),
+        Index("idx_payments_credit_id", "credit_id"),
     )
