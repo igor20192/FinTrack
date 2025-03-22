@@ -9,12 +9,12 @@ REDIS_URL = "redis://localhost:6379/0"
 
 
 async def get_redis():
-    """Создаёт подключение к Redis."""
+    """Creates a connection to Redis."""
     return await redis.from_url(REDIS_URL)
 
 
 async def get_cache(key: str):
-    """Получает данные из кэша по ключу."""
+    """Gets data from the cache by key."""
     redis = await get_redis()
     cached = await redis.get(key)
     await redis.close()
@@ -26,7 +26,7 @@ async def get_cache(key: str):
 
 
 async def set_cache(key: str, value, expire: int = 3600):
-    """Сохраняет данные в кэш с TTL."""
+    """Stores data in cache with TTL."""
     redis = await get_redis()
     await redis.set(key, json.dumps(value), ex=expire)
     await redis.close()
@@ -34,7 +34,7 @@ async def set_cache(key: str, value, expire: int = 3600):
 
 
 async def clear_cache(pattern: str):
-    """Очищает кэш по шаблону (например, 'year_performance:*')."""
+    """Clears the cache based on a pattern (e.g. 'year_performance:*')."""
     redis = await get_redis()
     cursor = 0
     while True:

@@ -27,7 +27,7 @@ async def get_user_credits(db: AsyncSession, user_id: int) -> List[CreditRespons
     cache_key = f"user_credits:{user_id}"
     cached = await get_cache(cache_key)
     if cached:
-        # Преобразуем строки дат обратно в объекты date
+        # Convert date strings back to date objects
         return [
             CreditResponse(
                 **{
@@ -89,7 +89,7 @@ async def get_user_credits(db: AsyncSession, user_id: int) -> List[CreditRespons
         for row in rows
     ]
 
-    # Преобразуем объекты CreditResponse в словари с датами в виде строк
+    # Convert CreditResponse objects to dictionaries with dates as strings
     credits_dict_list = [
         {
             **credit.model_dump(),
@@ -187,7 +187,7 @@ async def insert_plans(db: AsyncSession, df: pd.DataFrame):
         affected_years.add(period.year)
     await db.commit()
     logger.info("All plans prepared for insertion")
-    # Очистка кэша для всех затронутых годов
+    # Clear cache for all affected years
     for year in affected_years:
         try:
             await clear_cache(f"year_performance:{year}")
@@ -210,7 +210,7 @@ async def get_plans_performance(db: AsyncSession, check_date: date):
     cache_key = f"plans_performance:{check_date.isoformat()}"
     cached = await get_cache(cache_key)
     if cached:
-        # Преобразуем строки дат обратно в объекты date
+        # Convert date strings back to date objects
         return [
             PlanPerformanceResponse(
                 **{**item, "month": date.fromisoformat(item["month"])}
