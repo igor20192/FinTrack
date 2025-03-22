@@ -12,6 +12,13 @@ logger = logging.getLogger(__name__)
 
 
 async def init_db():
+    """
+    Initializes the database by dropping and creating all tables defined in the Base metadata.
+
+    This function performs asynchronous database operations to ensure that the database schema
+    matches the models defined in the application. It drops all existing tables and then
+    creates them anew.
+    """
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
@@ -19,6 +26,16 @@ async def init_db():
 
 
 async def load_users(db: AsyncSession, file_path: str):
+    """
+    Loads user data from a CSV file into the database.
+
+    This function reads user information from a tab-separated CSV file, creates User model
+    instances, and adds them to the database.
+
+    Args:
+        db (AsyncSession): The asynchronous database session.
+        file_path (str): The path to the CSV file containing user data.
+    """
     df = pd.read_csv(file_path, sep="\t")
     for _, row in df.iterrows():
         user = User(
@@ -34,6 +51,16 @@ async def load_users(db: AsyncSession, file_path: str):
 
 
 async def load_dictionary(db: AsyncSession, file_path: str):
+    """
+    Loads dictionary data from a CSV file into the database.
+
+    This function reads dictionary entries from a tab-separated CSV file, creates Dictionary
+    model instances, and adds them to the database.
+
+    Args:
+        db (AsyncSession): The asynchronous database session.
+        file_path (str): The path to the CSV file containing dictionary data.
+    """
     df = pd.read_csv(file_path, sep="\t")
     for _, row in df.iterrows():
         dictionary = Dictionary(id=row["id"], name=row["name"])
@@ -43,6 +70,16 @@ async def load_dictionary(db: AsyncSession, file_path: str):
 
 
 async def load_credits(db: AsyncSession, file_path: str):
+    """
+    Loads credit data from a CSV file into the database.
+
+    This function reads credit information from a tab-separated CSV file, creates Credit
+    model instances, and adds them to the database.
+
+    Args:
+        db (AsyncSession): The asynchronous database session.
+        file_path (str): The path to the CSV file containing credit data.
+    """
     df = pd.read_csv(file_path, sep="\t")
     for _, row in df.iterrows():
         credit = Credit(
@@ -66,6 +103,16 @@ async def load_credits(db: AsyncSession, file_path: str):
 
 
 async def load_plans(db: AsyncSession, file_path: str):
+    """
+    Loads plan data from a CSV file into the database.
+
+    This function reads plan information from a tab-separated CSV file, creates Plan
+    model instances, and adds them to the database.
+
+    Args:
+        db (AsyncSession): The asynchronous database session.
+        file_path (str): The path to the CSV file containing plan data.
+    """
     df = pd.read_csv(file_path, sep="\t")
     for _, row in df.iterrows():
         plan = Plan(
@@ -80,6 +127,16 @@ async def load_plans(db: AsyncSession, file_path: str):
 
 
 async def load_payments(db: AsyncSession, file_path: str):
+    """
+    Loads payment data from a CSV file into the database.
+
+    This function reads payment information from a tab-separated CSV file, creates Payment
+    model instances, and adds them to the database.
+
+    Args:
+        db (AsyncSession): The asynchronous database session.
+        file_path (str): The path to the CSV file containing payment data.
+    """
     df = pd.read_csv(file_path, sep="\t")
     for _, row in df.iterrows():
         payment = Payment(
@@ -95,6 +152,12 @@ async def load_payments(db: AsyncSession, file_path: str):
 
 
 async def main():
+    """
+    Main function to initialize the database and load data from CSV files.
+
+    This function orchestrates the initialization of the database and the loading of data
+    from various CSV files into the database tables.
+    """
     async with async_session() as db:
         await init_db()
 
