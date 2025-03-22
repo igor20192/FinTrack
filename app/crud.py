@@ -1,15 +1,73 @@
+# app/crud.py
+import time
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import text
+from sqlalchemy import select, func
 import logging
 from typing import List
-from sqlalchemy.ext.asyncio import AsyncSession
-from cache import clear_cache, get_cache, set_cache
-from schemas import CreditResponse, PlanPerformanceResponse
-from sqlalchemy.sql import text
-from datetime import date
-import time
-from models import Plan
 import pandas as pd
+from datetime import date
+from cache import get_cache, set_cache, clear_cache
+from models import Plan, Dictionary
+from schemas import CreditResponse, PlanPerformanceResponse
 
 logger = logging.getLogger(__name__)
+
+
+# ORM functions
+async def get_category_id(db: AsyncSession, category_name: str) -> int:
+    """Fetches category ID by name using ORM."""
+    result = await db.execute(
+        select(Dictionary.id).where(Dictionary.name == category_name)
+    )
+    category_id = result.scalar()
+    if not category_id:
+        raise ValueError(f"Category '{category_name}' not found")
+    return category_id
+
+
+async def check_existing_plan(db: AsyncSession, period: date, category_id: int) -> bool:
+    """Checks if a plan exists for the given period and category using ORM."""
+    result = await db.execute(
+        select(func.count())
+        .select_from(Plan)
+        .where(Plan.period == period, Plan.category_id == category_id)
+    )
+    return result.scalar() > 0
+
+
+async def insert_plans(db: AsyncSession, df: pd.DataFrame):
+    """Inserts plans from a DataFrame into the database using ORM and clears cache."""
+    affected_years = set()
+    for _, row in df.iterrows():
+        period = pd.to_datetime(row["month"], format="%Y-%m-%d").date()
+        if period.day != 1:
+            raise ValueError(
+                f"Plan month '{period}' must be the first day of the month"
+            )
+
+        category_id = await get_category_id(db, row["category_name"])
+        if await check_existing_plan(db, period, category_id):
+            raise ValueError(
+                f"Plan for {period} and category {row['category_name']} already exists"
+            )
+
+        plan = Plan(period=period, sum=row["sum"], category_id=category_id)
+        db.add(plan)
+        affected_years.add(period.year)
+
+    await db.commit()
+    logger.info("All plans prepared and inserted into database")
+
+    for year in affected_years:
+        try:
+            await clear_cache(f"year_performance:{year}")
+            await clear_cache(f"plans_performance:*-{year}-*")
+            logger.info(
+                f"Cache cleared for year_performance and plans_performance: {year}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to clear cache for year {year}: {e}")
 
 
 async def get_user_credits(db: AsyncSession, user_id: int) -> List[CreditResponse]:
@@ -44,6 +102,7 @@ async def get_user_credits(db: AsyncSession, user_id: int) -> List[CreditRespons
             for item in cached
         ]
 
+    # Leaving SQL for complex aggregation
     query = text(
         """
         SELECT 
@@ -68,7 +127,6 @@ async def get_user_credits(db: AsyncSession, user_id: int) -> List[CreditRespons
         GROUP BY c.id
         """
     )
-
     result = await db.execute(query, {"user_id": user_id})
     rows = result.fetchall()
 
@@ -103,7 +161,6 @@ async def get_user_credits(db: AsyncSession, user_id: int) -> List[CreditRespons
         }
         for credit in credits_list
     ]
-
     try:
         await set_cache(cache_key, credits_dict_list)
     except Exception as e:
@@ -112,168 +169,22 @@ async def get_user_credits(db: AsyncSession, user_id: int) -> List[CreditRespons
     return credits_list
 
 
-async def check_existing_plan(db: AsyncSession, period: date, category_id: int) -> bool:
-    """
-    Checks if a plan with the given period and category ID already exists in the database.
-
-    Args:
-        db: An asynchronous SQLAlchemy session.
-        period: The period (date) to check for.
-        category_id: The category ID to check for.
-
-    Returns:
-        True if a plan with the given period and category ID exists, False otherwise.
-    """
-    query = text(
-        "SELECT COUNT(*) FROM Plans WHERE period = :period AND category_id = :category_id"
-    )
-    result = await db.execute(query, {"period": period, "category_id": category_id})
-    count = result.scalar()
-    return count > 0
-
-
-async def get_category_id(db: AsyncSession, category_name: str) -> int:
-    """
-    Retrieves the ID of a category from the Dictionary table based on its name.
-
-    Args:
-        db: An asynchronous SQLAlchemy session.
-        category_name: The name of the category to retrieve the ID for.
-
-    Returns:
-        The ID of the category.
-
-    Raises:
-        ValueError: If the category with the given name is not found in the Dictionary table.
-    """
-    query = text("SELECT id FROM Dictionary WHERE name = :name")
-    result = await db.execute(query, {"name": category_name})
-    category_id = result.scalar()
-    if category_id is None:
-        raise ValueError(f"Категория '{category_name}' не найдена в таблице Dictionary")
-    return category_id
-
-
-async def insert_plans(db: AsyncSession, df: pd.DataFrame):
-    """
-    Inserts plans from a Pandas DataFrame into the database.
-
-    Args:
-        db: An asynchronous SQLAlchemy session.
-        df: A Pandas DataFrame containing plan data with columns 'month', 'category_name', and 'sum'.
-
-    Raises:
-        ValueError: If the month in the DataFrame is not the first day of the month,
-                    if the category name is not found, or if a plan with the same
-                    period and category already exists.
-    """
-    affected_years = set()
-
-    for _, row in df.iterrows():
-        period = pd.to_datetime(row["month"], format="%Y-%m-%d").date()
-        if period.day != 1:
-            raise ValueError(f"Месяц плана '{period}' должен быть первым числом месяца")
-
-        category_id = await get_category_id(db, row["category_name"])
-
-        # Duplicate check
-        if await check_existing_plan(db, period, category_id):
-            raise ValueError(
-                f"План для месяца {period} и категории {row['category_name']} уже существует"
-            )
-
-        plan = Plan(period=period, sum=row["sum"], category_id=category_id)
-        db.add(plan)
-        affected_years.add(period.year)
-    await db.commit()
-    logger.info("All plans prepared for insertion")
-    # Clear cache for all affected years
-    for year in affected_years:
-        try:
-            await clear_cache(f"year_performance:{year}")
-            logger.info(f"Cache cleared for year: {year}")
-        except Exception as e:
-            logger.error(f"Failed to clear cache for year {year}: {e}")
-
-
-async def get_plans_performance(db: AsyncSession, check_date: date):
-    """
-    Retrieves the performance of plans up to a given check date.
-
-    Args:
-        db: An asynchronous SQLAlchemy session.
-        check_date: The date up to which to check the performance of plans.
-
-    Returns:
-        A list of PlanPerformanceResponse objects, each representing the performance of a plan.
-    """
-    cache_key = f"plans_performance:{check_date.isoformat()}"
-    cached = await get_cache(cache_key)
-    if cached:
-        # Convert date strings back to date objects
-        return [
-            PlanPerformanceResponse(
-                **{**item, "month": date.fromisoformat(item["month"])}
-            )
-            for item in cached
-        ]
-
-    query = text(
-        """
-        SELECT 
-            p.period AS month,
-            d.name AS category,
-            p.sum AS plan_sum,
-            COALESCE(
-                CASE 
-                    WHEN d.id = 3 THEN (
-                        SELECT SUM(c.body) 
-                        FROM Credits c 
-                        WHERE c.issuance_date BETWEEN p.period AND :check_date
-                    )
-                    WHEN d.id = 4 THEN (
-                        SELECT SUM(pm.sum) 
-                        FROM Payments pm 
-                        WHERE pm.payment_date BETWEEN p.period AND :check_date
-                    )
-                    ELSE 0
-                END, 0
-            ) AS actual_sum
-        FROM Plans p
-        JOIN Dictionary d ON p.category_id = d.id
-        WHERE p.period <= :check_date
-    """
-    )
-    result = await db.execute(query, {"check_date": check_date})
-    rows = result.fetchall()
-    plans_list = [
-        PlanPerformanceResponse(
-            month=row[0],
-            category=row[1],
-            plan_sum=row[2],
-            actual_sum=float(row[3]),
-            performance_percent=(
-                round(float(row[3]) / row[2] * 100, 2) if row[2] > 0 else 0
-            ),
-        )
-        for row in rows
-    ]
-
-    # Convert to serializable format with dates as strings
-    plans_dict_list = [
-        {**plan.model_dump(), "month": plan.month.isoformat()} for plan in plans_list
-    ]
-
-    try:
-        await set_cache(cache_key, plans_dict_list)
-    except Exception as e:
-        logger.error(f"Failed to set cache for {cache_key}: {e}")
-
-    return plans_list
-
-
+# Pure SQL functions
 async def fetch_total_issuance(db: AsyncSession, year: int, start_time: float) -> float:
-    """Receives the total amount of payments for the year."""
+    """
+    Fetches the total issuance amount for a given year from the Credits table.
+
+    This function executes an asynchronous SQL query to calculate the sum of the 'body' column
+    in the Credits table for all entries where the 'issuance_date' year matches the provided year.
+
+    Args:
+        db (AsyncSession): The asynchronous database session.
+        year (int): The year for which to calculate the total issuance.
+        start_time (float): The timestamp indicating the start time of the operation, used for logging performance.
+
+    Returns:
+        float: The total issuance amount for the given year, or 0.0 if no data is found.
+    """
     result = await db.execute(
         text(
             "SELECT COALESCE(SUM(body), 0) FROM Credits WHERE YEAR(issuance_date) = :year"
@@ -288,7 +199,20 @@ async def fetch_total_issuance(db: AsyncSession, year: int, start_time: float) -
 async def fetch_total_collection(
     db: AsyncSession, year: int, start_time: float
 ) -> float:
-    """Receives the total amount of fees for the year."""
+    """
+    Fetches the total collection amount for a given year from the Payments table.
+
+    This function executes an asynchronous SQL query to calculate the sum of the 'sum' column
+    in the Payments table for all entries where the 'payment_date' year matches the provided year.
+
+    Args:
+        db (AsyncSession): The asynchronous database session.
+        year (int): The year for which to calculate the total collection.
+        start_time (float): The timestamp indicating the start time of the operation, used for logging performance.
+
+    Returns:
+        float: The total collection amount for the given year, or 0.0 if no data is found.
+    """
     result = await db.execute(
         text(
             "SELECT COALESCE(SUM(sum), 0) FROM Payments WHERE YEAR(payment_date) = :year"
@@ -303,7 +227,22 @@ async def fetch_total_collection(
 
 
 async def fetch_subquery_data(db: AsyncSession, query: str, year: int) -> dict:
-    """Executes a subquery and returns the data as a dictionary."""
+    """
+    Executes a subquery and returns the results as a dictionary.
+
+    This function executes an asynchronous SQL subquery against the database, using the provided query string and year parameter.
+    It then processes the query results into a dictionary where the keys are the first column of each row (assumed to be a month identifier)
+    and the values are dictionaries containing 'count' and 'sum' from the second and third columns of each row, respectively.
+
+    Args:
+        db (AsyncSession): The asynchronous database session.
+        query (str): The SQL subquery to execute.
+        year (int): The year parameter to be used in the subquery.
+
+    Returns:
+        dict: A dictionary where keys are month identifiers and values are dictionaries containing 'count' and 'sum' for each month.
+              Returns an empty dictionary if the subquery returns no rows.
+    """
     result = await db.execute(text(query), {"year": year})
     return {
         row[0]: {"count": row[1], "sum": float(row[2])} for row in result.fetchall()
@@ -311,14 +250,41 @@ async def fetch_subquery_data(db: AsyncSession, query: str, year: int) -> dict:
 
 
 def build_performance_item(
-    row: tuple,
+    row,
     credits_data: dict,
     payments_data: dict,
     total_issuance: float,
     total_collection: float,
 ) -> dict:
-    """Generates a single performance list item."""
-    month = row[3]  # period_month
+    """
+    Constructs a dictionary representing performance data for a specific month.
+
+    This function takes a row of data, pre-processed credits and payments data,
+    and total issuance and collection amounts for the year, and assembles them
+    into a structured dictionary containing monthly performance metrics.
+
+    Args:
+        row: A row of data containing month, plan issuance sum, plan collection sum, and month number.
+        credits_data (dict): A dictionary mapping month numbers to credit counts and sums.
+        payments_data (dict): A dictionary mapping month numbers to payment counts and sums.
+        total_issuance (float): The total issuance amount for the year.
+        total_collection (float): The total collection amount for the year.
+
+    Returns:
+        dict: A dictionary containing performance data for the specified month, including:
+            - month_year (str): The year and month in "YYYY-MM" format.
+            - issuance_count (int): The number of credit issuances.
+            - plan_issuance_sum (float): The planned issuance sum.
+            - actual_issuance_sum (float): The actual issuance sum.
+            - issuance_performance_percent (float): The percentage of actual issuance against planned issuance.
+            - payment_count (int): The number of payments.
+            - plan_collection_sum (float): The planned collection sum.
+            - actual_collection_sum (float): The actual collection sum.
+            - collection_performance_percent (float): The percentage of actual collection against planned collection.
+            - issuance_percent_of_year (float): The percentage of monthly issuance against total yearly issuance.
+            - collection_percent_of_year (float): The percentage of monthly collection against total yearly collection.
+    """
+    month = row[3]
     plan_issuance_sum = float(row[1] or 0)
     plan_collection_sum = float(row[2] or 0)
     credits = credits_data.get(month, {"count": 0, "sum": 0})
@@ -373,20 +339,14 @@ async def get_year_performance(db: AsyncSession, year: int):
     """
     start_time = time.time()
     cache_key = f"year_performance:{year}"
-
-    # Checking cache
     cached = await get_cache(cache_key)
     if cached:
-        logger.info(f"Year performance data fetched from cache for year: {year}")
         return cached
-
     logger.info(f"Starting year performance query for year: {year}")
 
-    # Getting total amounts
     total_issuance = await fetch_total_issuance(db, year, start_time)
     total_collection = await fetch_total_collection(db, year, start_time)
 
-    # Subqueries
     credits_subquery = """
         SELECT 
             MONTH(issuance_date) AS issuance_month,
@@ -416,7 +376,6 @@ async def get_year_performance(db: AsyncSession, year: int):
         GROUP BY period
     """
 
-    # Executing subqueries
     credits_data = await fetch_subquery_data(db, credits_subquery, year)
     payments_data = await fetch_subquery_data(db, payments_subquery, year)
     plans_result = await db.execute(text(plans_query), {"year": year})
@@ -429,7 +388,6 @@ async def get_year_performance(db: AsyncSession, year: int):
         await set_cache(cache_key, [])
         return []
 
-    # Formation of the result
     performance_list = [
         build_performance_item(
             row, credits_data, payments_data, total_issuance, total_collection
@@ -440,3 +398,87 @@ async def get_year_performance(db: AsyncSession, year: int):
     logger.info(f"Year performance processed in {time.time() - start_time:.2f} seconds")
     await set_cache(cache_key, performance_list)
     return performance_list
+
+
+async def get_plans_performance(
+    db: AsyncSession, check_date: date
+) -> List[PlanPerformanceResponse]:
+    """
+    Retrieves the performance of plans up to a given check date.
+
+    This function fetches plan performance data from the database, comparing planned sums against actual sums
+    calculated from Credits and Payments tables up to the specified check date. It also utilizes caching
+    to improve performance.
+
+    Args:
+        db (AsyncSession): The asynchronous database session.
+        check_date (date): The date up to which plan performance is evaluated.
+
+    Returns:
+        List[PlanPerformanceResponse]: A list of PlanPerformanceResponse objects, each representing the performance
+                                       of a plan up to the check date.
+
+    Raises:
+        Exception: If there is an issue setting the cache.
+    """
+    cache_key = f"plans_performance:{check_date.isoformat()}"
+    cached = await get_cache(cache_key)
+    if cached:
+        return [
+            PlanPerformanceResponse(
+                **{**item, "month": date.fromisoformat(item["month"])}
+            )
+            for item in cached
+        ]
+
+    query = text(
+        """
+        SELECT 
+            p.period AS month,
+            d.name AS category,
+            p.sum AS plan_sum,
+            COALESCE(
+                CASE 
+                    WHEN d.id = 3 THEN (
+                        SELECT SUM(c.body) 
+                        FROM Credits c 
+                        WHERE c.issuance_date BETWEEN p.period AND :check_date
+                    )
+                    WHEN d.id = 4 THEN (
+                        SELECT SUM(pm.sum) 
+                        FROM Payments pm 
+                        WHERE pm.payment_date BETWEEN p.period AND :check_date
+                    )
+                    ELSE 0
+                END, 0
+            ) AS actual_sum
+        FROM Plans p
+        JOIN Dictionary d ON p.category_id = d.id
+        WHERE p.period <= :check_date
+        """
+    )
+    result = await db.execute(query, {"check_date": check_date})
+    rows = result.fetchall()
+
+    plans_list = [
+        PlanPerformanceResponse(
+            month=row[0],
+            category=row[1],
+            plan_sum=row[2],
+            actual_sum=float(row[3]),
+            performance_percent=(
+                round(float(row[3]) / row[2] * 100, 2) if row[2] > 0 else 0
+            ),
+        )
+        for row in rows
+    ]
+
+    plans_dict_list = [
+        {**plan.model_dump(), "month": plan.month.isoformat()} for plan in plans_list
+    ]
+    try:
+        await set_cache(cache_key, plans_dict_list)
+    except Exception as e:
+        logger.error(f"Failed to set cache for {cache_key}: {e}")
+
+    return plans_list
