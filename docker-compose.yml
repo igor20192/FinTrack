@@ -1,0 +1,19 @@
+services:
+  db:
+    image: mysql:9.0
+    env_file:
+      - .env.db
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+  redis:
+    image: redis:latest
+    ports:
+      - 6379:6379
+
+volumes:
+  mysql-data:
+
+
