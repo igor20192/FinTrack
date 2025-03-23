@@ -317,11 +317,12 @@ async def get_year_performance(db: AsyncSession, year: int):
     """
     start_time = time.time()
     cache_key = f"year_performance:{year}"
-    cached = await get_cache(cache_key)
-    if cached:
-        return cached
-    logger.info(f"Starting year performance query for year: {year}")
-
+    try:
+        cached = await get_cache(cache_key)
+        if cached:
+            return cached
+    except Exception as e:
+        logger.error(f"Cache retrieval error: {e}")
     total_issuance = await fetch_total_issuance(db, year, start_time)
     total_collection = await fetch_total_collection(db, year, start_time)
 
