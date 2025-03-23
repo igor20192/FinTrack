@@ -141,20 +141,20 @@ async def plans_insert(file: UploadFile, db: AsyncSession = Depends(get_db)):
         if not all(col in df.columns for col in expected_columns):
             raise HTTPException(
                 status_code=400,
-                detail="Неверная структура файла: отсутствуют столбцы month, category_name или sum",
+                detail="Invalid file structure: missing columns month, category_name or sum",
             )
 
         # Check for missing values in the 'sum' column
         if df["sum"].isna().any():
             raise HTTPException(
-                status_code=400, detail="Столбец 'sum' содержит пустые значения"
+                status_code=400, detail="Column 'sum' contains empty values"
             )
 
         # Validate and insert data
         await insert_plans(db, df)
         await db.commit()
         logger.info("Plans successfully inserted")
-        return {"message": "Планы успешно загружены в базу данных"}
+        return {"message": "Plans have been successfully uploaded to the database."}
     except ValueError as e:
         await db.rollback()
         logger.error(f"Validation error: {str(e)}")
