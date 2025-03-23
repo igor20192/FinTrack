@@ -44,8 +44,19 @@ async def check_existing_plan(db: AsyncSession, period: date, category_id: int) 
 
 
 async def insert_plans(db: AsyncSession, df: pd.DataFrame):
-    """Inserts plans from a DataFrame into the database using ORM and clears cache."""
+    """
+    Inserts plans from a DataFrame into the database and clears related cache.
+
+    Args:
+        db (AsyncSession): The database session.
+        df (pd.DataFrame): DataFrame containing plan data with 'month', 'category_name', and 'sum' columns.
+
+    Raises:
+        ValueError: If 'month' is not the first day of the month or the plan already exists.
+    """
     affected_years = set()
+    plans_to_insert = []
+
     for _, row in df.iterrows():
         period = pd.to_datetime(row["month"], format="%Y-%m-%d").date()
         if period.day != 1:
@@ -59,20 +70,23 @@ async def insert_plans(db: AsyncSession, df: pd.DataFrame):
                 f"Plan for {period} and category {row['category_name']} already exists"
             )
 
-        plan = Plan(period=period, sum=row["sum"], category_id=category_id)
-        db.add(plan)
+        plans_to_insert.append(
+            Plan(period=period, sum=row["sum"], category_id=category_id)
+        )
         affected_years.add(period.year)
 
-    await db.commit()
-    logger.info("All plans prepared and inserted into database")
+    if plans_to_insert:
+        db.add_all(plans_to_insert)
+        await db.commit()
+        logger.info(
+            f"{len(plans_to_insert)} plans successfully inserted into the database"
+        )
 
     for year in affected_years:
         try:
             await clear_cache(f"year_performance:{year}")
             await clear_cache(f"plans_performance:*-{year}-*")
-            logger.info(
-                f"Cache cleared for year_performance and plans_performance: {year}"
-            )
+            logger.info(f"Cache cleared for year {year}")
         except Exception as e:
             logger.error(f"Failed to clear cache for year {year}: {e}")
 
