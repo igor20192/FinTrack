@@ -1,13 +1,16 @@
 # app/queries.py
 from datetime import date
-from sqlalchemy import null, select, func, case
+from typing import List, Tuple
+from sqlalchemy import Select, null, select, func, case
 from sqlalchemy.sql import distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 from models import Credit, Dictionary, Payment, Plan
 
 
 # ORM queries for get_year_performance
-async def get_credits_data(year: int):
+
+
+async def get_credits_data(year: int) -> Select:
     """
     Asynchronously retrieves credit issuance data grouped by month for a given year.
 
@@ -22,21 +25,23 @@ async def get_credits_data(year: int):
         year (int): The year for which to retrieve credit issuance data.
 
     Returns:
-        sqlalchemy.sql.selectable.Select: An SQLAlchemy select statement that can be executed to fetch the data.
+        Select: An SQLAlchemy select statement that can be executed to fetch the data.
     """
+
+    issuance_month = func.extract("month", Credit.issuance_date).label("issuance_month")
 
     return (
         select(
-            func.extract("month", Credit.issuance_date).label("issuance_month"),
+            issuance_month,
             func.count(distinct(Credit.id)).label("issuance_count"),
             func.coalesce(func.sum(Credit.body), 0).label("actual_issuance_sum"),
         )
         .where(func.extract("year", Credit.issuance_date) == year)
-        .group_by(func.extract("month", Credit.issuance_date))
+        .group_by(issuance_month)
     )
 
 
-async def get_payments_data(year: int):
+async def get_payments_data(year: int) -> Select:
     """
     Asynchronously retrieves payment data grouped by month for a given year.
 
@@ -51,20 +56,23 @@ async def get_payments_data(year: int):
         year (int): The year for which to retrieve payment data.
 
     Returns:
-        sqlalchemy.sql.selectable.Select: An SQLAlchemy select statement that can be executed to fetch the data.
+        Select: An SQLAlchemy select statement that can be executed to fetch the data.
     """
+
+    payment_month = func.extract("month", Payment.payment_date).label("payment_month")
+
     return (
         select(
-            func.extract("month", Payment.payment_date).label("payment_month"),
+            payment_month,
             func.count(distinct(Payment.id)).label("payment_count"),
             func.coalesce(func.sum(Payment.sum), 0).label("actual_collection_sum"),
         )
         .where(func.extract("year", Payment.payment_date) == year)
-        .group_by(func.extract("month", Payment.payment_date))
+        .group_by(payment_month)
     )
 
 
-async def get_plans_data(year: int):
+async def get_plans_data(year: int) -> Select:
     """
     Asynchronously retrieves plan data grouped by month for a given year.
 
@@ -80,8 +88,11 @@ async def get_plans_data(year: int):
         year (int): The year for which to retrieve plan data.
 
     Returns:
-        sqlalchemy.sql.selectable.Select: An SQLAlchemy select statement that can be executed to fetch the data.
+        Select: An SQLAlchemy select statement that can be executed to fetch the data.
     """
+
+    period_month = func.extract("month", Plan.period).label("period_month")
+
     return (
         select(
             Plan.period.label("month_year"),
@@ -91,14 +102,14 @@ async def get_plans_data(year: int):
             func.max(case((Plan.category_id == 4, Plan.sum), else_=0)).label(
                 "plan_collection_sum"
             ),
-            func.extract("month", Plan.period).label("period_month"),
+            period_month,
         )
         .where(func.extract("year", Plan.period) == year)
         .group_by(Plan.period)
     )
 
 
-async def get_plans_performance_orm(db: AsyncSession, check_date: date):
+async def get_plans_performance_orm(db: AsyncSession, check_date: date) -> List[Tuple]:
     """
     Asynchronously retrieves plan performance data up to a given date.
 
@@ -110,7 +121,7 @@ async def get_plans_performance_orm(db: AsyncSession, check_date: date):
         check_date (date): The date up to which plan performance is calculated.
 
     Returns:
-        list: A list of result rows, each row represented as a tuple.
+        List[Tuple]: A list of result rows, each row represented as a tuple.
     """
 
     credits_sum_subquery = (
@@ -125,19 +136,18 @@ async def get_plans_performance_orm(db: AsyncSession, check_date: date):
         .scalar_subquery()
     )
 
+    actual_sum_case = case(
+        (Dictionary.id == 3, credits_sum_subquery),
+        (Dictionary.id == 4, payments_sum_subquery),
+        else_=0,
+    )
+
     query = (
         select(
             Plan.period.label("month"),
             Dictionary.name.label("category"),
             Plan.sum.label("plan_sum"),
-            func.coalesce(
-                case(
-                    (Dictionary.id == 3, credits_sum_subquery),
-                    (Dictionary.id == 4, payments_sum_subquery),
-                    else_=0,
-                ),
-                0,
-            ).label("actual_sum"),
+            func.coalesce(actual_sum_case, 0).label("actual_sum"),
         )
         .join(Dictionary, Plan.category_id == Dictionary.id)
         .where(Plan.period <= check_date)
@@ -147,7 +157,7 @@ async def get_plans_performance_orm(db: AsyncSession, check_date: date):
     return result.fetchall()
 
 
-async def get_credits_with_payments_orm(db: AsyncSession, user_id: int):
+async def get_credits_with_payments_orm(db: AsyncSession, user_id: int) -> List[Tuple]:
     """
     Asynchronously retrieves credit information with associated payment details for a given user.
 
@@ -159,8 +169,17 @@ async def get_credits_with_payments_orm(db: AsyncSession, user_id: int):
         user_id (int): The ID of the user for whom to retrieve credit information.
 
     Returns:
-        list: A list of result rows, each row represented as a tuple.
+        List[Tuple]: A list of result rows, each row represented as a tuple.
     """
+    overdue_days_case = case(
+        (
+            (Credit.actual_return_date.is_(None))
+            & (Credit.return_date < func.curdate()),
+            func.datediff(func.curdate(), Credit.return_date),
+        ),
+        else_=null(),
+    )
+
     query = (
         select(
             Credit.id.label("credit_id"),
@@ -177,14 +196,7 @@ async def get_credits_with_payments_orm(db: AsyncSession, user_id: int):
             func.sum(case((Payment.type_id == 2, Payment.sum), else_=0)).label(
                 "percent_payments"
             ),
-            case(
-                (
-                    (Credit.actual_return_date.is_(None))
-                    & (Credit.return_date < func.curdate()),
-                    func.datediff(func.curdate(), Credit.return_date),
-                ),
-                else_=null(),
-            ).label("overdue_days"),
+            overdue_days_case.label("overdue_days"),
         )
         .outerjoin(Payment, Credit.id == Payment.credit_id)
         .where(Credit.user_id == user_id)
