@@ -10,6 +10,13 @@ from datetime import date
 from cache import get_cache, set_cache, clear_cache
 from models import Credit, Plan, Dictionary, Payment
 from schemas import CreditResponse, PlanPerformanceResponse
+from queries import (
+    get_credits_data,
+    get_payments_data,
+    get_plans_data,
+    get_plans_performance_orm,
+    get_credits_with_payments_orm,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -102,34 +109,7 @@ async def get_user_credits(db: AsyncSession, user_id: int) -> List[CreditRespons
             for item in cached
         ]
 
-    # Leaving SQL for complex aggregation
-    query = text(
-        """
-        SELECT 
-            c.id AS credit_id,
-            c.issuance_date,
-            c.actual_return_date IS NOT NULL AS is_closed,
-            c.actual_return_date,
-            c.return_date,
-            c.body,
-            c.percent,
-            SUM(p.sum) AS total_payments,
-            SUM(CASE WHEN p.type_id = 1 THEN p.sum ELSE 0 END) AS body_payments,
-            SUM(CASE WHEN p.type_id = 2 THEN p.sum ELSE 0 END) AS percent_payments,
-            CASE 
-                WHEN c.actual_return_date IS NULL AND c.return_date < CURDATE() 
-                THEN DATEDIFF(CURDATE(), c.return_date) 
-                ELSE NULL 
-            END AS overdue_days
-        FROM Credits c
-        LEFT JOIN Payments p ON c.id = p.credit_id
-        WHERE c.user_id = :user_id
-        GROUP BY c.id
-        """
-    )
-    result = await db.execute(query, {"user_id": user_id})
-    rows = result.fetchall()
-
+    rows = await get_credits_with_payments_orm(db, user_id)
     credits_list = [
         CreditResponse(
             credit_id=row.credit_id,
@@ -225,7 +205,7 @@ async def fetch_total_collection(
     return total
 
 
-async def fetch_subquery_data(db: AsyncSession, query: str, year: int) -> dict:
+async def fetch_subquery_data(db: AsyncSession, query) -> dict:
     """
     Executes a subquery and returns the results as a dictionary.
 
@@ -242,7 +222,7 @@ async def fetch_subquery_data(db: AsyncSession, query: str, year: int) -> dict:
         dict: A dictionary where keys are month identifiers and values are dictionaries containing 'count' and 'sum' for each month.
               Returns an empty dictionary if the subquery returns no rows.
     """
-    result = await db.execute(text(query), {"year": year})
+    result = await db.execute(query)
     return {
         row[0]: {"count": row[1], "sum": float(row[2])} for row in result.fetchall()
     }
@@ -346,38 +326,13 @@ async def get_year_performance(db: AsyncSession, year: int):
     total_issuance = await fetch_total_issuance(db, year, start_time)
     total_collection = await fetch_total_collection(db, year, start_time)
 
-    credits_subquery = """
-        SELECT 
-            MONTH(issuance_date) AS issuance_month,
-            COUNT(DISTINCT id) AS issuance_count,
-            COALESCE(SUM(body), 0) AS actual_issuance_sum
-        FROM Credits
-        WHERE YEAR(issuance_date) = :year
-        GROUP BY MONTH(issuance_date)
-    """
-    payments_subquery = """
-        SELECT 
-            MONTH(payment_date) AS payment_month,
-            COUNT(DISTINCT id) AS payment_count,
-            COALESCE(SUM(sum), 0) AS actual_collection_sum
-        FROM Payments
-        WHERE YEAR(payment_date) = :year
-        GROUP BY MONTH(payment_date)
-    """
-    plans_query = """
-        SELECT 
-            period AS month_year,
-            MAX(CASE WHEN category_id = 3 THEN sum ELSE 0 END) AS plan_issuance_sum,
-            MAX(CASE WHEN category_id = 4 THEN sum ELSE 0 END) AS plan_collection_sum,
-            MONTH(period) AS period_month
-        FROM Plans
-        WHERE YEAR(period) = :year
-        GROUP BY period
-    """
+    credits_subquery = await get_credits_data(year)
+    payments_subquery = await get_payments_data(year)
+    plans_query = await get_plans_data(year)
 
-    credits_data = await fetch_subquery_data(db, credits_subquery, year)
-    payments_data = await fetch_subquery_data(db, payments_subquery, year)
-    plans_result = await db.execute(text(plans_query), {"year": year})
+    credits_data = await fetch_subquery_data(db, credits_subquery)
+    payments_data = await fetch_subquery_data(db, payments_subquery)
+    plans_result = await db.execute(plans_query)
     rows = plans_result.fetchall()
 
     logger.info(f"Subqueries executed in {time.time() - start_time:.2f} seconds")
@@ -430,34 +385,7 @@ async def get_plans_performance(
             for item in cached
         ]
 
-    query = text(
-        """
-        SELECT 
-            p.period AS month,
-            d.name AS category,
-            p.sum AS plan_sum,
-            COALESCE(
-                CASE 
-                    WHEN d.id = 3 THEN (
-                        SELECT SUM(c.body) 
-                        FROM Credits c 
-                        WHERE c.issuance_date BETWEEN p.period AND :check_date
-                    )
-                    WHEN d.id = 4 THEN (
-                        SELECT SUM(pm.sum) 
-                        FROM Payments pm 
-                        WHERE pm.payment_date BETWEEN p.period AND :check_date
-                    )
-                    ELSE 0
-                END, 0
-            ) AS actual_sum
-        FROM Plans p
-        JOIN Dictionary d ON p.category_id = d.id
-        WHERE p.period <= :check_date
-        """
-    )
-    result = await db.execute(query, {"check_date": check_date})
-    rows = result.fetchall()
+    rows = await get_plans_performance_orm(db, check_date)
 
     plans_list = [
         PlanPerformanceResponse(
