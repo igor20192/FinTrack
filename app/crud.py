@@ -377,13 +377,17 @@ async def get_plans_performance(
     """
     cache_key = f"plans_performance:{check_date.isoformat()}"
     cached = await get_cache(cache_key)
-    if cached:
-        return [
-            PlanPerformanceResponse(
-                **{**item, "month": date.fromisoformat(item["month"])}
-            )
-            for item in cached
-        ]
+    try:
+        cached = await get_cache(cache_key)
+        if cached:
+            return [
+                PlanPerformanceResponse(
+                    **{**item, "month": date.fromisoformat(item["month"])}
+                )
+                for item in cached
+            ]
+    except Exception as e:
+        logger.error(f"Cache retrieval error: {e}")
 
     rows = await get_plans_performance_orm(db, check_date)
 
@@ -392,9 +396,11 @@ async def get_plans_performance(
             month=row[0],
             category=row[1],
             plan_sum=row[2],
-            actual_sum=float(row[3]),
+            actual_sum=float(row[3]) if row[3] is not None else 0.0,
             performance_percent=(
-                round(float(row[3]) / row[2] * 100, 2) if row[2] > 0 else 0
+                round(float(row[3]) / row[2] * 100, 2)
+                if row[2] > 0 and row[3] is not None
+                else 0
             ),
         )
         for row in rows
