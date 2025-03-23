@@ -1,4 +1,5 @@
 # app/crud.py
+import json
 import time
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
@@ -91,7 +92,7 @@ async def insert_plans(db: AsyncSession, df: pd.DataFrame):
             logger.error(f"Failed to clear cache for year {year}: {e}")
 
 
-async def get_user_credits(db: AsyncSession, user_id: int) -> List[CreditResponse]:
+async def get_user_credits(db: AsyncSession, user_id: int) -> list[CreditResponse]:
     """
     Fetches credit details for a given user, including payment statistics
     and overdue information.
@@ -101,27 +102,17 @@ async def get_user_credits(db: AsyncSession, user_id: int) -> List[CreditRespons
         user_id (int): The user's ID.
 
     Returns:
-        List[CreditResponse]: A list of credit records.
+        list[CreditResponse]: A list of credit records.
     """
     cache_key = f"user_credits:{user_id}"
-    cached = await get_cache(cache_key)
-    if cached:
-        # Convert date strings back to date objects
-        return [
-            CreditResponse(
-                **{
-                    **item,
-                    "issuance_date": date.fromisoformat(item["issuance_date"]),
-                    "actual_return_date": (
-                        date.fromisoformat(item["actual_return_date"])
-                        if item["actual_return_date"]
-                        else None
-                    ),
-                    "return_date": date.fromisoformat(item["return_date"]),
-                }
-            )
-            for item in cached
-        ]
+
+    try:
+        cached = await get_cache(cache_key)
+        if cached:
+            cached_data = json.loads(cached)
+            return [CreditResponse.model_validate(item) for item in cached_data]
+    except Exception as e:
+        logger.error(f"Cache retrieval error: {e}")
 
     rows = await get_credits_with_payments_orm(db, user_id)
     credits_list = [
@@ -131,32 +122,26 @@ async def get_user_credits(db: AsyncSession, user_id: int) -> List[CreditRespons
             is_closed=bool(row.is_closed),
             actual_return_date=row.actual_return_date,
             return_date=row.return_date,
-            overdue_days=row.overdue_days if not row.is_closed else None,
+            overdue_days=None if row.is_closed else row.overdue_days,
             body=row.body,
             percent=row.percent,
             total_payments=row.total_payments if row.is_closed else None,
-            body_payments=row.body_payments if not row.is_closed else None,
-            percent_payments=row.percent_payments if not row.is_closed else None,
+            body_payments=None if row.is_closed else row.body_payments,
+            percent_payments=None if row.is_closed else row.percent_payments,
         )
         for row in rows
     ]
 
-    # Convert CreditResponse objects to dictionaries with dates as strings
-    credits_dict_list = [
-        {
-            **credit.model_dump(),
-            "issuance_date": credit.issuance_date.isoformat(),
-            "actual_return_date": (
-                credit.actual_return_date.isoformat()
-                if credit.actual_return_date
-                else None
-            ),
-            "return_date": credit.return_date.isoformat(),
-        }
-        for credit in credits_list
-    ]
+    def serialize_dates(credit: CreditResponse):
+        data = credit.model_dump()
+        for field in ["issuance_date", "actual_return_date", "return_date"]:
+            if data[field] is not None:
+                data[field] = data[field].isoformat()  # Преобразуем `date` в строку
+        return data
+
     try:
-        await set_cache(cache_key, credits_dict_list)
+        serialized_data = [serialize_dates(credit) for credit in credits_list]
+        await set_cache(cache_key, json.dumps(serialized_data))
     except Exception as e:
         logger.error(f"Failed to set cache: {e}")
 
