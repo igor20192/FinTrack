@@ -2,13 +2,13 @@
 import time
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
-from sqlalchemy import select, func
+from sqlalchemy import extract, select, func
 import logging
 from typing import List
 import pandas as pd
 from datetime import date
 from cache import get_cache, set_cache, clear_cache
-from models import Plan, Dictionary
+from models import Credit, Plan, Dictionary, Payment
 from schemas import CreditResponse, PlanPerformanceResponse
 
 logger = logging.getLogger(__name__)
@@ -169,27 +169,26 @@ async def get_user_credits(db: AsyncSession, user_id: int) -> List[CreditRespons
     return credits_list
 
 
-# Pure SQL functions
 async def fetch_total_issuance(db: AsyncSession, year: int, start_time: float) -> float:
     """
-    Fetches the total issuance amount for a given year from the Credits table.
+    Asynchronously fetches the total issuance amount for a given year from the Credits table.
 
-    This function executes an asynchronous SQL query to calculate the sum of the 'body' column
-    in the Credits table for all entries where the 'issuance_date' year matches the provided year.
+    This function constructs and executes an asynchronous SQLAlchemy query to calculate the sum of the 'body' column
+    from the Credits table, filtered by the year extracted from the 'issuance_date' column. It handles potential
+    NULL values by replacing them with 0.0 and logs the execution time.
 
     Args:
-        db (AsyncSession): The asynchronous database session.
-        year (int): The year for which to calculate the total issuance.
-        start_time (float): The timestamp indicating the start time of the operation, used for logging performance.
+        db (AsyncSession): The asynchronous database session to use for executing the query.
+        year (int): The year for which to calculate the total issuance amount.
+        start_time (float): The timestamp representing the start time of the operation, used for logging performance.
 
     Returns:
-        float: The total issuance amount for the given year, or 0.0 if no data is found.
+        float: The total issuance amount for the specified year, or 0.0 if no data is found.
     """
     result = await db.execute(
-        text(
-            "SELECT COALESCE(SUM(body), 0) FROM Credits WHERE YEAR(issuance_date) = :year"
-        ),
-        {"year": year},
+        select(func.coalesce(func.sum(Credit.body), 0.0)).filter(
+            extract("year", Credit.issuance_date) == year
+        )
     )
     total = float(result.scalar() or 0)
     logger.info(f"Total issuance calculated in {time.time() - start_time:.2f} seconds")
@@ -200,24 +199,24 @@ async def fetch_total_collection(
     db: AsyncSession, year: int, start_time: float
 ) -> float:
     """
-    Fetches the total collection amount for a given year from the Payments table.
+    Asynchronously fetches the total collection amount for a given year from the Payments table.
 
-    This function executes an asynchronous SQL query to calculate the sum of the 'sum' column
-    in the Payments table for all entries where the 'payment_date' year matches the provided year.
+    This function constructs and executes an asynchronous SQLAlchemy query to calculate the sum of the 'sum' column
+    from the Payments table, filtered by the year extracted from the 'payment_date' column. It handles potential
+    NULL values by replacing them with 0.0 and logs the execution time.
 
     Args:
-        db (AsyncSession): The asynchronous database session.
-        year (int): The year for which to calculate the total collection.
-        start_time (float): The timestamp indicating the start time of the operation, used for logging performance.
+        db (AsyncSession): The asynchronous database session to use for executing the query.
+        year (int): The year for which to calculate the total collection amount.
+        start_time (float): The timestamp representing the start time of the operation, used for logging performance.
 
     Returns:
-        float: The total collection amount for the given year, or 0.0 if no data is found.
+        float: The total collection amount for the specified year, or 0.0 if no data is found.
     """
     result = await db.execute(
-        text(
-            "SELECT COALESCE(SUM(sum), 0) FROM Payments WHERE YEAR(payment_date) = :year"
-        ),
-        {"year": year},
+        select(func.coalesce(func.sum(Payment.sum), 0.0)).filter(
+            extract("year", Payment.payment_date) == year
+        )
     )
     total = float(result.scalar() or 0)
     logger.info(
