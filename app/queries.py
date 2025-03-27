@@ -1,10 +1,37 @@
 # app/queries.py
 from datetime import date
 from typing import List, Tuple
-from sqlalchemy import Select, null, select, func, case
+from sqlalchemy import Integer, Select, null, select, func, case
 from sqlalchemy.sql import distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 from models import Credit, Dictionary, Payment, Plan
+
+
+def current_date(dialect):
+    """
+    Returns the SQL expression to get the current date based on the database dialect.
+
+    :param dialect: A string representing the database dialect (e.g., "sqlite", "postgresql").
+    :return: An SQL function object representing the current date.
+    """
+    if dialect == "sqlite":
+        return func.date("now")
+    return func.curdate()
+
+
+def date_diff(end_date, start_date, dialect):
+    """
+    Returns the SQL expression to calculate the difference in days between two dates
+    based on the database dialect.
+
+    :param end_date: An SQL expression object representing the end date.
+    :param start_date: An SQL expression object representing the start date.
+    :param dialect: A string representing the database dialect (e.g., "sqlite", "postgresql").
+    :return: An SQL expression object representing the difference in days between end_date and start_date.
+    """
+    if dialect == "sqlite":
+        return func.cast(func.julianday(end_date) - func.julianday(start_date), Integer)
+    return func.datediff(end_date, start_date)
 
 
 # ORM queries for get_year_performance
@@ -171,11 +198,12 @@ async def get_credits_with_payments_orm(db: AsyncSession, user_id: int) -> List[
     Returns:
         List[Tuple]: A list of result rows, each row represented as a tuple.
     """
+    dialect = db.bind.dialect.name
     overdue_days_case = case(
         (
             (Credit.actual_return_date.is_(None))
-            & (Credit.return_date < func.curdate()),
-            func.datediff(func.curdate(), Credit.return_date),
+            & (Credit.return_date < current_date(dialect)),
+            date_diff(current_date(dialect), Credit.return_date, dialect),
         ),
         else_=null(),
     )
