@@ -18,6 +18,7 @@ from queries import (
     get_plans_performance_orm,
     get_credits_with_payments_orm,
 )
+from fastapi.encoders import jsonable_encoder
 
 logger = logging.getLogger(__name__)
 
@@ -109,8 +110,7 @@ async def get_user_credits(db: AsyncSession, user_id: int) -> list[CreditRespons
     try:
         cached = await get_cache(cache_key)
         if cached:
-            cached_data = json.loads(cached)
-            return [CreditResponse.model_validate(item) for item in cached_data]
+            return [CreditResponse.model_validate(item) for item in cached]
     except Exception as e:
         logger.error(f"Cache retrieval error: {e}")
 
@@ -132,16 +132,9 @@ async def get_user_credits(db: AsyncSession, user_id: int) -> list[CreditRespons
         for row in rows
     ]
 
-    def serialize_dates(credit: CreditResponse):
-        data = credit.model_dump()
-        for field in ["issuance_date", "actual_return_date", "return_date"]:
-            if data[field] is not None:
-                data[field] = data[field].isoformat()  # Преобразуем `date` в строку
-        return data
-
     try:
-        serialized_data = [serialize_dates(credit) for credit in credits_list]
-        await set_cache(cache_key, json.dumps(serialized_data))
+        serialized_data = jsonable_encoder(credits_list)
+        await set_cache(cache_key, serialized_data)
     except Exception as e:
         logger.error(f"Failed to set cache: {e}")
 
@@ -406,11 +399,9 @@ async def get_plans_performance(
         for row in rows
     ]
 
-    plans_dict_list = [
-        {**plan.model_dump(), "month": plan.month.isoformat()} for plan in plans_list
-    ]
+    serialized_data = jsonable_encoder(plans_list)
     try:
-        await set_cache(cache_key, plans_dict_list)
+        await set_cache(cache_key, serialized_data)
     except Exception as e:
         logger.error(f"Failed to set cache for {cache_key}: {e}")
 
